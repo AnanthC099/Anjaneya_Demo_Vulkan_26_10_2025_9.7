@@ -9,8 +9,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include "SceneSwitcher.h"
-#include "glm/gtc/constants.hpp"      // Scene 1 math
-#include "glm/gtx/quaternion.hpp"     // Scene 1 camera quaternion
+#include "Scenes.h"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -47,95 +46,9 @@ void InitializeSceneSwitcherGlobals(void)
     gCtx_Switcher.bValidation = TRUE;
 }
 
-/* Scene selection without C++ enum class */
-typedef enum ActiveSceneTag
-{
-    ACTIVE_SCENE_NONE   = -1,
-    ACTIVE_SCENE_SCENE0 = 0,
-    ACTIVE_SCENE_SCENE1 = 1,
-    ACTIVE_SCENE_SCENE2 = 2
-} ActiveScene;
-
-static ActiveScene gActiveScene = ACTIVE_SCENE_NONE;
-
-/* ========================= Scene 1 Integration (state + helpers) ========================= */
-/* Config and resources */
-static const DWORD K_OVERLAY_LEAD_MS     = 450u;
-static const DWORD K_OVERLAY_FADE_MS     = 450u;
-static const DWORD K_HOLD_DURATION_MS    = 3000u;
-static const int   K_PAN_REPEATS         = 12;
-static const float K_MIN_SEP_DEG         = 90.0f;
-static const int   K_OVERLAY_COUNT       = 12;
-static const float K_OVERLAY_SIZE_FRAC0  = 0.40f;
-static float       sOverlaySizeFrac      = K_OVERLAY_SIZE_FRAC0;
-static float       sPanSpeedDegPerSec    = 30.0f;
-
-static const char* const gSkyboxFaces[6] =
-{
-    "images_Scene1/right.png",
-    "images_Scene1/left.png",
-    "images_Scene1/top.png",
-    "images_Scene1/bottom.png",
-    "images_Scene1/front.png",
-    "images_Scene1/back.png"
-};
-
-static const char* const gOverlayPathList[K_OVERLAY_COUNT] =
-{
-    "images_Scene1/01_Mesh.png", "images_Scene1/02_Vrushabh.png", "images_Scene1/03_Mithun.png",
-    "images_Scene1/04_Karka.png","images_Scene1/05_Simha.png",    "images_Scene1/06_Kanya.png",
-    "images_Scene1/07_Tula.png", "images_Scene1/08_Vruschik.png","images_Scene1/09_Dhanu.png",
-    "images_Scene1/10_Makar.png","images_Scene1/11_Kumbh.png",   "images_Scene1/12_Meen.png"
-};
+ActiveScene gActiveScene = ACTIVE_SCENE_NONE;
 
 /* Scene 1 texture handles (GPU) */
-static VkImage        sSkyImage     = VK_NULL_HANDLE;
-static VkDeviceMemory sSkyMem       = VK_NULL_HANDLE;
-static VkImageView    sSkyView      = VK_NULL_HANDLE;
-static VkSampler      sSkySampler   = VK_NULL_HANDLE;
-
-static VkImage        sOverlayImages[K_OVERLAY_COUNT];
-static VkDeviceMemory sOverlayMem[K_OVERLAY_COUNT];
-static VkImageView    sOverlayViews[K_OVERLAY_COUNT];
-static VkSampler      sOverlaySamplers[K_OVERLAY_COUNT];
-static int            sOverlayBound   = -1;
-static int            sOverlayPending = -1;
-static BOOL           sCmdBuffersDirty = FALSE;
-
-/* Scene 1 shaders (separate modules) */
-static VkShaderModule gShaderModule_vertex_scene1   = VK_NULL_HANDLE;
-static VkShaderModule gShaderModule_fragment_scene1 = VK_NULL_HANDLE;
-static VkShaderModule gShaderModule_vertex_scene2   = VK_NULL_HANDLE;
-static VkShaderModule gShaderModule_fragment_scene2 = VK_NULL_HANDLE;
-
-/* Camera animation state */
-typedef enum CameraPhaseTag
-{
-    CAM_PAN,
-    CAM_HOLD,
-    CAM_STOPPED
-} CameraPhase;
-
-static CameraPhase sCamPhase       = CAM_PAN;
-static glm::quat   sCamQ           = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-static glm::quat   sCamQStart      = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-static glm::quat   sCamQTarget     = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-static DWORD       sPhaseStartMs   = 0;
-static DWORD       sPanDurationMs  = 1200;
-static int         sPansDone       = 0;
-
-static float ease01(float x)
-{
-    if (x < 0.0f) x = 0.0f;
-    if (x > 1.0f) x = 1.0f;
-    return x * x * (3.0f - 2.0f * x);
-}
-
-static float frand01(void)
-{
-    return (float)rand() / (float)RAND_MAX;
-}
-
 static VkCommandBuffer BeginOneShotCB(void)
 {
     VkCommandBufferAllocateInfo commandBufferAllocateInfo;
@@ -188,7 +101,7 @@ static VkResult WaitForGpuIdle(void)
     return vkResult;
 }
 
-static VkResult CreateTexture2D(const char* path,
+VkResult CreateTexture2D(const char* path,
                                 VkImage* outImg,
                                 VkDeviceMemory* outMem,
                                 VkImageView* outView,
@@ -361,7 +274,7 @@ static VkResult CreateTexture2D(const char* path,
     return VK_SUCCESS;
 }
 
-static VkResult CreateCubemap(const char* const faces[6],
+VkResult CreateCubemap(const char* const faces[6],
                               VkImage* outImg,
                               VkDeviceMemory* outMem,
                               VkImageView* outView,
@@ -604,500 +517,7 @@ static VkResult LoadShaderModuleFromFile(const char* path, VkShaderModule* outMo
     return result;
 }
 
-static void BindOverlayTexture(int which)
-{
-    if (which < 0) return;
-    if (which >= K_OVERLAY_COUNT) which = K_OVERLAY_COUNT - 1;
-    if (sOverlayBound == which) return;
-    if (sOverlayPending == which) return;
-    sOverlayPending = which;
-}
-
-static glm::quat RandomOrientationQuat(void)
-{
-    float u1 = frand01();
-    float u2 = frand01() * 2.0f * glm::pi<float>();
-    float u3 = frand01() * 2.0f * glm::pi<float>();
-    float s1 = sqrtf(1.0f - u1);
-    float s2 = sqrtf(u1);
-    float x = s1 * sinf(u2);
-    float y = s1 * cosf(u2);
-    float z = s2 * sinf(u3);
-    float w = s2 * cosf(u3);
-    return glm::normalize(glm::quat(w, x, y, z));
-}
-
-static glm::quat RandomOrientationFarFrom(const glm::quat from, float minSepDeg)
-{
-    glm::vec3 fPrev = from * glm::vec3(0.0f, 0.0f, -1.0f);
-    float minDot = cosf(glm::radians(minSepDeg));
-    int i;
-    for (i = 0; i < 64; ++i)
-    {
-        glm::quat q = RandomOrientationQuat();
-        glm::vec3 f = q * glm::vec3(0.0f, 0.0f, -1.0f);
-        float d = glm::dot(glm::normalize(fPrev), glm::normalize(f));
-        if (d <= minDot)
-        {
-            return glm::normalize(q);
-        }
-    }
-    glm::quat flip = glm::rotation(fPrev, -fPrev);
-    return glm::normalize(flip * from);
-}
-
-static DWORD CalcPanDurationMs(const glm::quat q0, const glm::quat q1)
-{
-    glm::quat d = glm::normalize(q1 * glm::conjugate(q0));
-    float w = d.w;
-    if (w < -1.0f) w = -1.0f;
-    if (w >  1.0f) w =  1.0f;
-    float angleRad = 2.0f * acosf(w);
-    float angleDeg = glm::degrees(angleRad);
-    float denom = sPanSpeedDegPerSec;
-    if (denom < 1e-3f) denom = 1e-3f;
-    {
-        float ms = (angleDeg / denom) * 1000.0f;
-        if (ms < 120.0f)   ms = 120.0f;
-        if (ms > 30000.0f) ms = 30000.0f;
-        return (DWORD)(ms + 0.5f);
-    }
-}
-
-static void SetPanSpeedDegPerSec(float s)
-{
-    if (s < 1.0f)   s = 1.0f;
-    if (s > 360.0f) s = 360.0f;
-    {
-        DWORD now = timeGetTime();
-        if (sCamPhase == CAM_PAN)
-        {
-            float oldDur = (float)sPanDurationMs;
-            float prog = (now - sPhaseStartMs) / oldDur;
-            if (prog < 0.0f) prog = 0.0f;
-            if (prog > 1.0f) prog = 1.0f;
-            sPanSpeedDegPerSec = s;
-            sPanDurationMs = CalcPanDurationMs(sCamQStart, sCamQTarget);
-            sPhaseStartMs = now - (DWORD)(prog * (float)sPanDurationMs);
-        }
-        else
-        {
-            sPanSpeedDegPerSec = s;
-        }
-    }
-}
-
-static void SetOverlaySizeFrac(float frac)
-{
-    if (frac < 0.05f) frac = 0.05f;
-    if (frac > 2.00f) frac = 2.00f;
-    sOverlaySizeFrac = frac;
-}
-
-static void NudgeOverlaySizeFrac(float delta)
-{
-    SetOverlaySizeFrac(sOverlaySizeFrac + delta);
-}
-
-static void BeginNewPan(void)
-{
-    int which = sPansDone;
-    if (which >= K_OVERLAY_COUNT) which = K_OVERLAY_COUNT - 1;
-    BindOverlayTexture(which);
-    sCamQStart     = sCamQ;
-    sCamQTarget    = RandomOrientationFarFrom(sCamQ, K_MIN_SEP_DEG);
-    sPanDurationMs = CalcPanDurationMs(sCamQStart, sCamQTarget);
-    sPhaseStartMs  = timeGetTime();
-    sCamPhase      = CAM_PAN;
-}
-
-static void UpdateCameraAnim(void)
-{
-    DWORD now = timeGetTime();
-    if (sCamPhase == CAM_PAN)
-    {
-        float t = (now - sPhaseStartMs) / (float)sPanDurationMs;
-        if (t >= 1.0f)
-        {
-            sCamQ = sCamQTarget;
-            sCamPhase = CAM_HOLD;
-            sPhaseStartMs = now;
-        }
-        else
-        {
-            float s = ease01(t);
-            sCamQ = glm::slerp(sCamQStart, sCamQTarget, s);
-        }
-    }
-    else if (sCamPhase == CAM_HOLD)
-    {
-        if (now - sPhaseStartMs >= K_HOLD_DURATION_MS)
-        {
-            sPansDone++;
-            if (sPansDone >= K_PAN_REPEATS)
-            {
-                sCamPhase = CAM_STOPPED;
-            }
-            else
-            {
-                BeginNewPan();
-            }
-        }
-    }
-}
-
-static float ComputeOverlayFadeForPan(void)
-{
-    DWORD now = timeGetTime();
-    if (sCamPhase == CAM_PAN)
-    {
-        DWORD elapsed = now - sPhaseStartMs;
-        DWORD lead = (K_OVERLAY_LEAD_MS < sPanDurationMs) ? K_OVERLAY_LEAD_MS : sPanDurationMs;
-        if (elapsed <= sPanDurationMs - lead)
-        {
-            return 0.0f;
-        }
-        else
-        {
-            float u = (float)(elapsed - (sPanDurationMs - lead)) / (float)lead;
-            if (u < 0.0f) u = 0.0f;
-            if (u > 1.0f) u = 1.0f;
-            return ease01(u);
-        }
-    }
-    else if (sCamPhase == CAM_HOLD)
-    {
-        DWORD t = now - sPhaseStartMs;
-        DWORD out = (K_OVERLAY_FADE_MS < K_HOLD_DURATION_MS) ? K_OVERLAY_FADE_MS : K_HOLD_DURATION_MS;
-        if (t < (K_HOLD_DURATION_MS - out))
-        {
-            return 1.0f;
-        }
-        else
-        {
-            float u = (float)(K_HOLD_DURATION_MS - t) / (float)out;
-            if (u < 0.0f) u = 0.0f;
-            if (u > 1.0f) u = 1.0f;
-            return ease01(u);
-        }
-    }
-    return 0.0f;
-}
-
-/* ============================ Showcase sequence state ============================= */
-typedef enum SequenceStateTag
-{
-    SEQUENCE_IDLE = 0,
-    SEQUENCE_SCENE0_HOLD,
-    SEQUENCE_SCENE0_FADE_OUT,
-    SEQUENCE_SCENE1_DELAY,
-    SEQUENCE_SCENE1_FADE_IN,
-    SEQUENCE_SCENE1_RUN,
-    SEQUENCE_SCENE1_WAIT,
-    SEQUENCE_SCENE1_FADE_OUT,
-    SEQUENCE_SCENE2_FADE_IN,
-    SEQUENCE_SCENE2_HOLD,
-    SEQUENCE_COMPLETE
-} SequenceState;
-
-static SequenceState sSequenceState = SEQUENCE_IDLE;
-static DWORD         sSequenceStateStartMs = 0;
-static BOOL          sSequenceAudioStarted = FALSE;
-
-static const DWORD K_SEQUENCE_FADE_MS                    = 1500u;
-static const DWORD K_SEQUENCE_SCENE0_FADE_IN_DELAY_MS    = 6000u;
-static const DWORD K_SEQUENCE_SCENE0_FADE_WINDOW_MS      = 2000u;
-static const DWORD K_SEQUENCE_SCENE0_VISIBLE_HOLD_MS     = 5000u;
-static const DWORD K_SEQUENCE_SCENE0_TO_SCENE1_DELAY_MS  = 1000u;
-static const DWORD K_SEQUENCE_SCENE1_WAIT_MS             = 5000u;
-static const DWORD K_SEQUENCE_SCENE2_HOLD_MS             = 7000u;
-static const DWORD K_SEQUENCE_AUDIO_START_DELAY_MS       = 1000u;
-static const char  K_SEQUENCE_AUDIO_PATH[]               = "Omega.wav";
-
-static void StartShowcaseAudio(void);
-
-static float sPendingBlendFade  = 0.0f;
-static float sRecordedBlendFade = 0.0f;
-
-static float Clamp01(float x)
-{
-    if (x < 0.0f) return 0.0f;
-    if (x > 1.0f) return 1.0f;
-    return x;
-}
-
-static BOOL IsSequenceActive(void)
-{
-    return sSequenceState != SEQUENCE_IDLE;
-}
-
-static void UpdateBlendFade(float fade)
-{
-    float clamped = Clamp01(fade);
-    if (fabsf(clamped - sPendingBlendFade) > 1e-6f)
-    {
-        sPendingBlendFade = clamped;
-    }
-    if (fabsf(sPendingBlendFade - sRecordedBlendFade) > 5e-4f)
-    {
-        sCmdBuffersDirty = TRUE;
-    }
-}
-
-static BOOL IsScene1AnimationComplete(void)
-{
-    return sCamPhase == CAM_STOPPED;
-}
-
-static void ResetScene1ForSequence(void)
-{
-    sOverlayPending = -1;
-    sOverlayBound   = -1;
-    sPansDone       = 0;
-    sCamQ           = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-    sCamQStart      = sCamQ;
-    sCamQTarget     = sCamQ;
-    sCamPhase       = CAM_STOPPED;
-    BeginNewPan();
-    sCmdBuffersDirty = TRUE;
-}
-
-static void EnterSequenceState(SequenceState state)
-{
-    sSequenceState = state;
-    sSequenceStateStartMs = timeGetTime();
-
-    switch (state)
-    {
-    case SEQUENCE_SCENE0_HOLD:
-        gActiveScene = ACTIVE_SCENE_SCENE0;
-        gCtx_Switcher.gFade = 0.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        break;
-    case SEQUENCE_SCENE0_FADE_OUT:
-        gActiveScene = ACTIVE_SCENE_SCENE0;
-        break;
-    case SEQUENCE_SCENE1_DELAY:
-        gActiveScene = ACTIVE_SCENE_SCENE0;
-        gCtx_Switcher.gFade = 0.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        break;
-    case SEQUENCE_SCENE1_FADE_IN:
-        gActiveScene = ACTIVE_SCENE_SCENE1;
-        gCtx_Switcher.gFade = 0.0f;
-        ResetScene1ForSequence();
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        break;
-    case SEQUENCE_SCENE1_RUN:
-    case SEQUENCE_SCENE1_WAIT:
-        gActiveScene = ACTIVE_SCENE_SCENE1;
-        gCtx_Switcher.gFade = 1.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        break;
-    case SEQUENCE_SCENE1_FADE_OUT:
-        gActiveScene = ACTIVE_SCENE_SCENE1;
-        break;
-    case SEQUENCE_SCENE2_FADE_IN:
-        gActiveScene = ACTIVE_SCENE_SCENE2;
-        gCtx_Switcher.gFade = 0.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        break;
-    case SEQUENCE_SCENE2_HOLD:
-        gActiveScene = ACTIVE_SCENE_SCENE2;
-        gCtx_Switcher.gFade = 1.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        break;
-    case SEQUENCE_COMPLETE:
-        gCtx_Switcher.gFade = 1.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        break;
-    default:
-        break;
-    }
-}
-
-static void StartShowcaseAudio(void)
-{
-    if (sSequenceAudioStarted)
-    {
-        return;
-    }
-
-    if (PlaySoundA(K_SEQUENCE_AUDIO_PATH, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT))
-    {
-        sSequenceAudioStarted = TRUE;
-    }
-    else
-    {
-        fprintf(gCtx_Switcher.gpFile, "StartShowcaseAudio() --> PlaySoundA failed\n");
-    }
-}
-
-static void StartShowcaseSequence(void)
-{
-    if (sSequenceAudioStarted)
-    {
-        PlaySoundA(NULL, NULL, 0);
-        sSequenceAudioStarted = FALSE;
-    }
-    EnterSequenceState(SEQUENCE_SCENE0_HOLD);
-}
-
-static void StopShowcaseSequence(void)
-{
-    if (sSequenceAudioStarted)
-    {
-        PlaySoundA(NULL, NULL, 0);
-        sSequenceAudioStarted = FALSE;
-    }
-    sSequenceState = SEQUENCE_IDLE;
-    gCtx_Switcher.gFade = 1.0f;
-    UpdateBlendFade(gCtx_Switcher.gFade);
-}
-
-static void UpdateShowcaseSequence(void)
-{
-    if (!IsSequenceActive())
-    {
-        return;
-    }
-
-    DWORD now = timeGetTime();
-    DWORD elapsed = 0;
-    DWORD fadeElapsed = 0;
-    float fadeProgress = 0.0f;
-
-    switch (sSequenceState)
-    {
-    case SEQUENCE_SCENE0_HOLD:
-        elapsed = now - sSequenceStateStartMs;
-        if (!sSequenceAudioStarted && elapsed >= K_SEQUENCE_AUDIO_START_DELAY_MS)
-        {
-            StartShowcaseAudio();
-            sSequenceAudioStarted = TRUE;
-        }
-        if (elapsed < K_SEQUENCE_SCENE0_FADE_IN_DELAY_MS)
-        {
-            gCtx_Switcher.gFade = 0.0f;
-        }
-        else if (elapsed < K_SEQUENCE_SCENE0_FADE_IN_DELAY_MS + K_SEQUENCE_SCENE0_FADE_WINDOW_MS)
-        {
-            fadeElapsed = elapsed - K_SEQUENCE_SCENE0_FADE_IN_DELAY_MS;
-            fadeProgress = (K_SEQUENCE_SCENE0_FADE_WINDOW_MS > 0)
-                               ? Clamp01(fadeElapsed / (float)K_SEQUENCE_SCENE0_FADE_WINDOW_MS)
-                               : 1.0f;
-            gCtx_Switcher.gFade = fadeProgress;
-        }
-        else
-        {
-            gCtx_Switcher.gFade = 1.0f;
-        }
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        if (elapsed >= K_SEQUENCE_SCENE0_FADE_IN_DELAY_MS +
-                           K_SEQUENCE_SCENE0_FADE_WINDOW_MS +
-                           K_SEQUENCE_SCENE0_VISIBLE_HOLD_MS)
-        {
-            EnterSequenceState(SEQUENCE_SCENE0_FADE_OUT);
-        }
-        break;
-
-    case SEQUENCE_SCENE0_FADE_OUT:
-        fadeProgress = Clamp01((now - sSequenceStateStartMs) / (float)K_SEQUENCE_FADE_MS);
-        gCtx_Switcher.gFade = 1.0f - fadeProgress;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        if (fadeProgress >= 1.0f)
-        {
-            EnterSequenceState(SEQUENCE_SCENE1_DELAY);
-        }
-        break;
-
-    case SEQUENCE_SCENE1_DELAY:
-        if (now - sSequenceStateStartMs >= K_SEQUENCE_SCENE0_TO_SCENE1_DELAY_MS)
-        {
-            EnterSequenceState(SEQUENCE_SCENE1_FADE_IN);
-        }
-        break;
-
-    case SEQUENCE_SCENE1_FADE_IN:
-        gCtx_Switcher.gFade = Clamp01((now - sSequenceStateStartMs) / (float)K_SEQUENCE_FADE_MS);
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        if (gCtx_Switcher.gFade >= 1.0f)
-        {
-            EnterSequenceState(SEQUENCE_SCENE1_RUN);
-        }
-        break;
-
-    case SEQUENCE_SCENE1_RUN:
-        gCtx_Switcher.gFade = 1.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        if (IsScene1AnimationComplete())
-        {
-            EnterSequenceState(SEQUENCE_SCENE1_WAIT);
-        }
-        break;
-
-    case SEQUENCE_SCENE1_WAIT:
-        gCtx_Switcher.gFade = 1.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        if (now - sSequenceStateStartMs >= K_SEQUENCE_SCENE1_WAIT_MS)
-        {
-            EnterSequenceState(SEQUENCE_SCENE1_FADE_OUT);
-        }
-        break;
-
-    case SEQUENCE_SCENE1_FADE_OUT:
-        gCtx_Switcher.gFade = 1.0f - Clamp01((now - sSequenceStateStartMs) / (float)K_SEQUENCE_FADE_MS);
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        if (gCtx_Switcher.gFade <= 0.0f)
-        {
-            EnterSequenceState(SEQUENCE_SCENE2_FADE_IN);
-        }
-        break;
-
-    case SEQUENCE_SCENE2_FADE_IN:
-        gCtx_Switcher.gFade = Clamp01((now - sSequenceStateStartMs) / (float)K_SEQUENCE_FADE_MS);
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        if (gCtx_Switcher.gFade >= 1.0f)
-        {
-            EnterSequenceState(SEQUENCE_SCENE2_HOLD);
-        }
-        break;
-
-    case SEQUENCE_SCENE2_HOLD:
-        gCtx_Switcher.gFade = 1.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        if (now - sSequenceStateStartMs >= K_SEQUENCE_SCENE2_HOLD_MS)
-        {
-            EnterSequenceState(SEQUENCE_COMPLETE);
-        }
-        break;
-
-    case SEQUENCE_COMPLETE:
-        gCtx_Switcher.gFade = 1.0f;
-        UpdateBlendFade(gCtx_Switcher.gFade);
-        break;
-
-    default:
-        break;
-    }
-}
-
-static VkResult CreateScene1Textures(void)
-{
-    VkResult r = CreateCubemap(gSkyboxFaces, &sSkyImage, &sSkyMem, &sSkyView, &sSkySampler);
-    if (r != VK_SUCCESS) return r;
-    for (int i = 0; i < K_OVERLAY_COUNT; ++i)
-    {
-        VkResult rr = CreateTexture2D(gOverlayPathList[i],
-                                      &sOverlayImages[i],
-                                      &sOverlayMem[i],
-                                      &sOverlayViews[i],
-                                      &sOverlaySamplers[i]);
-        if (rr != VK_SUCCESS) return rr;
-    }
-    sOverlayBound = 0;
-    return VK_SUCCESS;
-}
+/* Scene 1 logic lives in Scene1.cpp */
 /* ====================== end Scene 1 Integration (state + helpers) ======================= */
 
 //WinMain
@@ -1267,24 +687,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
                         break;
 
                 case VK_F4:
-                        StartShowcaseSequence();
+                        Scene1_StartSequence();
                         fprintf(gCtx_Switcher.gpFile, "WndProc() --> Showcase sequence started\n");
                         break;
 
                 case SCENESWITCHER_KEY_SCENE0:
-                        StopShowcaseSequence();
+                        Scene1_StopSequence();
                         gActiveScene = ACTIVE_SCENE_SCENE0;
                         fprintf(gCtx_Switcher.gpFile, "WndProc() --> Active scene set to 0\n");
                         break;
 
                 case SCENESWITCHER_KEY_SCENE1:
-                        StopShowcaseSequence();
+                        Scene1_StopSequence();
                         gActiveScene = ACTIVE_SCENE_SCENE1;
                         fprintf(gCtx_Switcher.gpFile, "WndProc() --> Active scene set to 1\n");
                         break;
 
                 case SCENESWITCHER_KEY_SCENE2:
-                        StopShowcaseSequence();
+                        Scene1_StopSequence();
                         gActiveScene = ACTIVE_SCENE_SCENE2;
                         fprintf(gCtx_Switcher.gpFile, "WndProc() --> Active scene set to 2\n");
                         break;
@@ -1304,7 +724,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
             {
                 if (gActiveScene == ACTIVE_SCENE_SCENE1)
                 {
-                    SetPanSpeedDegPerSec(sPanSpeedDegPerSec - 10.0f);
+                    Scene1_AdjustPanSpeed(-10.0f);
                 }
             } break;
             case 'x':
@@ -1312,7 +732,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
             {
                 if (gActiveScene == ACTIVE_SCENE_SCENE1)
                 {
-                    SetPanSpeedDegPerSec(sPanSpeedDegPerSec + 10.0f);
+                    Scene1_AdjustPanSpeed(+10.0f);
                 }
             } break;
             case 'c':
@@ -1320,7 +740,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
             {
                 if (gActiveScene == ACTIVE_SCENE_SCENE1)
                 {
-                    NudgeOverlaySizeFrac(-0.02f);
+                    Scene1_AdjustOverlaySize(-0.02f);
                 }
             } break;
             case 'v':
@@ -1328,7 +748,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
             {
                 if (gActiveScene == ACTIVE_SCENE_SCENE1)
                 {
-                    NudgeOverlaySizeFrac(+0.02f);
+                    Scene1_AdjustOverlaySize(+0.02f);
                 }
             } break;
             default: break;
@@ -1574,15 +994,15 @@ vkResult = gFunctionTable_Switcher.createTexture("Vijay_Kundali.png");
     }
     
     /* Scene 1: create cubemap + overlay textures */
-    vkResult = CreateScene1Textures();
+    vkResult = Scene1_CreateTextures();
     if (vkResult != VK_SUCCESS)
     {
-        fprintf(gCtx_Switcher.gpFile, "Initialize() --> CreateScene1Textures() failed %d\n", vkResult);
+        fprintf(gCtx_Switcher.gpFile, "Initialize() --> Scene1_CreateTextures() failed %d\n", vkResult);
         return vkResult;
     }
     else
     {
-        fprintf(gCtx_Switcher.gpFile, "Initialize() --> CreateScene1Textures() succeeded\n");
+        fprintf(gCtx_Switcher.gpFile, "Initialize() --> Scene1_CreateTextures() succeeded\n");
     }
 
     vkResult = CreateTexture2D("EndCredits.png",
@@ -1603,7 +1023,7 @@ vkResult = gFunctionTable_Switcher.createTexture("Vijay_Kundali.png");
     /* timers for smooth camera pans */
     timeBeginPeriod(1);
     srand((unsigned)timeGetTime());
-    BeginNewPan();
+    Scene1_BeginNewPan();
 
 //create Uniform Buffer
 vkResult = gFunctionTable_Switcher.createUniformBuffer();
@@ -2065,7 +1485,7 @@ VkResult vkResult = VK_SUCCESS;
 
     BOOL didWaitForIdle = FALSE;
 
-    if (sOverlayPending >= 0)
+    if (Scene1_HasPendingOverlay())
     {
         VkResult idleResult = WaitForGpuIdle();
         if (idleResult != VK_SUCCESS)
@@ -2073,29 +1493,14 @@ VkResult vkResult = VK_SUCCESS;
             return idleResult;
         }
         didWaitForIdle = TRUE;
-
-        VkDescriptorImageInfo overlay;
-        memset(&overlay, 0, sizeof(overlay));
-        overlay.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        overlay.imageView   = sOverlayViews[sOverlayPending];
-        overlay.sampler     = sOverlaySamplers[sOverlayPending];
-
-        VkWriteDescriptorSet write;
-        memset(&write, 0, sizeof(write));
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = gCtx_Switcher.vkDescriptorSet_scene1;
-        write.dstBinding = 2;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo = &overlay;
-        vkUpdateDescriptorSets(gCtx_Switcher.vkDevice, 1, &write, 0, NULL);
-
-        sOverlayBound = sOverlayPending;
-        sOverlayPending = -1;
-        sCmdBuffersDirty = TRUE;
+        VkResult bindResult = Scene1_BindPendingOverlay(gCtx_Switcher.vkDescriptorSet_scene1);
+        if (bindResult != VK_SUCCESS)
+        {
+            return bindResult;
+        }
     }
 
-    if (sCmdBuffersDirty)
+    if (Scene1_IsCommandBufferDirty())
     {
         if (!didWaitForIdle)
         {
@@ -2112,7 +1517,7 @@ VkResult vkResult = VK_SUCCESS;
         {
             return rr;
         }
-        sCmdBuffersDirty = FALSE;
+        Scene1_ClearCommandBufferDirty();
     }
 
     //One of the mmeber of vkSubmitinfo structure requires array of pipeline stages, we have only one of the completion of color attachment output, still we need 1 member array
@@ -2193,20 +1598,20 @@ vkResult = gFunctionTable_Switcher.updateUniformBuffer();
     
 void Update(void)
 {
-    UpdateShowcaseSequence();
+    Scene1_UpdateSequence();
 
-    if (IsSequenceActive())
+    if (Scene1_IsSequenceActive())
     {
         if (gActiveScene == ACTIVE_SCENE_SCENE1)
         {
-            UpdateCameraAnim();
+            Scene1_UpdateCameraAnim();
         }
         return;
     }
 
     if (gActiveScene == ACTIVE_SCENE_SCENE1)
     {
-        UpdateCameraAnim();
+        Scene1_UpdateCameraAnim();
     }
 
     float targetFade = (gActiveScene == ACTIVE_SCENE_NONE) ? 0.0f : 1.0f;
@@ -2214,7 +1619,7 @@ void Update(void)
     {
         gCtx_Switcher.gFade = targetFade;
     }
-    UpdateBlendFade(gCtx_Switcher.gFade);
+    Scene1_UpdateBlendFade(gCtx_Switcher.gFade);
 }
 
 void Uninitialize(void)
@@ -2386,18 +1791,7 @@ void Uninitialize(void)
         vkDestroyShaderModule(gCtx_Switcher.vkDevice, gShaderModule_vertex_scene2, NULL);
         gShaderModule_vertex_scene2 = VK_NULL_HANDLE;
     }
-    /* Scene 1 textures */
-    for (int i = 0; i < K_OVERLAY_COUNT; ++i)
-    {
-        if (sOverlaySamplers[i]) vkDestroySampler(gCtx_Switcher.vkDevice, sOverlaySamplers[i], NULL);
-        if (sOverlayViews[i])    vkDestroyImageView(gCtx_Switcher.vkDevice, sOverlayViews[i], NULL);
-        if (sOverlayMem[i])      vkFreeMemory(gCtx_Switcher.vkDevice, sOverlayMem[i], NULL);
-        if (sOverlayImages[i])   vkDestroyImage(gCtx_Switcher.vkDevice, sOverlayImages[i], NULL);
-    }
-    if (sSkySampler) vkDestroySampler(gCtx_Switcher.vkDevice, sSkySampler, NULL);
-    if (sSkyView)    vkDestroyImageView(gCtx_Switcher.vkDevice, sSkyView, NULL);
-    if (sSkyMem)     vkFreeMemory(gCtx_Switcher.vkDevice, sSkyMem, NULL);
-    if (sSkyImage)   vkDestroyImage(gCtx_Switcher.vkDevice, sSkyImage, NULL);
+    Scene1_DestroyTextures();
 
     //Destroy uniform buffers
     if(gCtx_Switcher.uniformData_scene0.vkBuffer)
@@ -5477,120 +4871,19 @@ VkResult createUniformBuffer(void)
 
 VkResult updateUniformBuffer(void)
 {
-    VkResult vkResult = VK_SUCCESS;
-    
-    //code
-    //Note:glm follows column major matrix just like OpenGL, BUT unlike OpenGL its matrix array is 2D array 4x4 and not 1D array of 16 elements 
-    GlobalContext_Switcher::MyUniformData myUniformData;
-    memset((void*)&myUniformData, 0, sizeof(GlobalContext_Switcher::MyUniformData));
-    //update matrices
-    myUniformData.modelMatrix = glm::mat4(1.0f);  //Identity matrix
-    
-    glm::mat4 translationMatrix = glm::mat4(1.0f);  //Identity matrix
-    translationMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -4.0f));
-    
-    glm::mat4 rotationMatrix_X = glm::mat4(1.0f);  //Identity matrix
-    glm::mat4 rotationMatrix_Y = glm::mat4(1.0f);  //Identity matrix
-    glm::mat4 rotationMatrix_Z = glm::mat4(1.0f);  //Identity matrix
-    
-    glm::mat4 rotationMatrix = glm::mat4(1.0f);  //Identity matrix
-    rotationMatrix_X = glm::rotate(glm::mat4(1.0f), glm::radians(gCtx_Switcher.angle), glm::vec3(1.0f, 0.0f, 0.0f)); //X axis rotation
-    rotationMatrix_Y = glm::rotate(glm::mat4(1.0f), glm::radians(gCtx_Switcher.angle), glm::vec3(0.0f, 1.0f, 0.0f)); //Y axis rotation
-    rotationMatrix_Z = glm::rotate(glm::mat4(1.0f), glm::radians(gCtx_Switcher.angle), glm::vec3(0.0f, 0.0f, 1.0f)); //Z axis rotation
-    
-    rotationMatrix = rotationMatrix_X * rotationMatrix_Y * rotationMatrix_Z;
-    
-    glm::mat4 ScaleMatrix = glm::mat4(1.0f);  //Identity matrix
-    ScaleMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(2.05f, 1.25f, 1.25f));
-    
-    myUniformData.modelMatrix = translationMatrix * ScaleMatrix * rotationMatrix;
-    
-    myUniformData.viewMatrix = glm::mat4(1.0f);  //Identity matrix
-    //myUniformData.projectionMatrix = glm::mat4(1.0f);  //Identity matrix
-    glm::mat4 perspectiveProjectionMatrix = glm::mat4(1.0f); //Identity matrix
-    perspectiveProjectionMatrix = glm::mat4(1.0f); //Identity matrix
-    
-    perspectiveProjectionMatrix = glm::perspective(glm::radians(45.0f), (float)gCtx_Switcher.winWidth/(float)gCtx_Switcher.winHeight, 0.1f, 100.0f);
-    
-    perspectiveProjectionMatrix[1][1] = perspectiveProjectionMatrix[1][1] * (-1.0f);
-    
-    myUniformData.projectionMatrix = perspectiveProjectionMatrix;
-	
-        myUniformData.fade = glm::vec4(gCtx_Switcher.gFade, 0.0f, 0.0f, 0.0f);
-    
-    //map uniform buffer for scene 0
-    void* data = NULL;
-    vkResult = vkMapMemory(gCtx_Switcher.vkDevice, gCtx_Switcher.uniformData_scene0.vkDeviceMemory, 0, sizeof(GlobalContext_Switcher::MyUniformData), 0, &data);
-    if(vkResult != VK_SUCCESS)
+    VkResult vkResult = Scene0_UpdateUniformBuffer();
+    if (vkResult != VK_SUCCESS)
     {
-        fprintf(gCtx_Switcher.gpFile, "createUniformBuffer() --> vkMapMemory() is failed and error code is %d\n", vkResult);
         return vkResult;
     }
 
-    //#12 copy the data to maped buffer
-    memcpy(data, &myUniformData, sizeof(GlobalContext_Switcher::MyUniformData));
-
-    //Unmap memory
-    vkUnmapMemory(gCtx_Switcher.vkDevice, gCtx_Switcher.uniformData_scene0.vkDeviceMemory);
-
-    /* Scene 1: view from quaternion camera, pack overlay params in fade.xyzw */
+    vkResult = Scene1_UpdateUniformBuffer();
+    if (vkResult != VK_SUCCESS)
     {
-        GlobalContext_Switcher::MyUniformData scene1;
-        memset(&scene1, 0, sizeof(scene1));
-        scene1.modelMatrix = glm::mat4(1.0f);
-
-        glm::mat4 V = glm::mat4_cast(glm::conjugate(sCamQ));
-        V[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
-        scene1.viewMatrix = V;
-
-        glm::mat4 P = glm::perspective(glm::radians(45.0f),
-                                       (float)gCtx_Switcher.winWidth / (float)gCtx_Switcher.winHeight,
-                                       0.1f, 100.0f);
-        P[1][1] *= -1.0f;
-        scene1.projectionMatrix = P;
-
-        /* fade.x = fade(0..1), fade.y = screenW, fade.z = screenH, fade.w = overlay size fraction */
-        scene1.fade = glm::vec4(ComputeOverlayFadeForPan(),
-                                (float)gCtx_Switcher.winWidth,
-                                (float)gCtx_Switcher.winHeight,
-                                sOverlaySizeFrac);
-
-        void* p = NULL;
-        vkResult = vkMapMemory(gCtx_Switcher.vkDevice, gCtx_Switcher.uniformData_scene1.vkDeviceMemory, 0, sizeof(scene1), 0, &p);
-        if (vkResult != VK_SUCCESS)
-        {
-            fprintf(gCtx_Switcher.gpFile, "updateUniformBuffer() --> vkMapMemory() failed for scene1 error %d\n", vkResult);
-            return vkResult;
-        }
-        memcpy(p, &scene1, sizeof(scene1));
-        vkUnmapMemory(gCtx_Switcher.vkDevice, gCtx_Switcher.uniformData_scene1.vkDeviceMemory);
+        return vkResult;
     }
 
-    /* Scene 2: static fullscreen quad */
-    {
-        GlobalContext_Switcher::MyUniformData scene2;
-        memset(&scene2, 0, sizeof(scene2));
-        scene2.modelMatrix = glm::mat4(1.0f);
-        scene2.viewMatrix = glm::mat4(1.0f);
-        scene2.projectionMatrix = glm::mat4(1.0f);
-
-        void* p2 = NULL;
-        vkResult = vkMapMemory(gCtx_Switcher.vkDevice,
-                               gCtx_Switcher.uniformData_scene2.vkDeviceMemory,
-                               0,
-                               sizeof(scene2),
-                               0,
-                               &p2);
-        if(vkResult != VK_SUCCESS)
-        {
-            fprintf(gCtx_Switcher.gpFile, "updateUniformBuffer() --> vkMapMemory() failed for scene2 error %d\n", vkResult);
-            return vkResult;
-        }
-        memcpy(p2, &scene2, sizeof(scene2));
-        vkUnmapMemory(gCtx_Switcher.vkDevice, gCtx_Switcher.uniformData_scene2.vkDeviceMemory);
-    }
-
-    return vkResult;
+    return Scene2_UpdateUniformBuffer();
 }
 
 VkResult createShaders(void)
@@ -5969,16 +5262,10 @@ VkResult createDescriptorSet(void)
     scene0Texture.sampler = gCtx_Switcher.vkSampler_texture;
 
     VkDescriptorImageInfo scene1Sky;
-    memset(&scene1Sky, 0, sizeof(scene1Sky));
-    scene1Sky.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    scene1Sky.imageView   = sSkyView;
-    scene1Sky.sampler     = sSkySampler;
+    Scene1_GetSkyDescriptor(&scene1Sky);
 
     VkDescriptorImageInfo scene1Overlay;
-    memset(&scene1Overlay, 0, sizeof(scene1Overlay));
-    scene1Overlay.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    scene1Overlay.imageView   = sOverlayViews[0];
-    scene1Overlay.sampler     = sOverlaySamplers[0];
+    Scene1_GetOverlayDescriptor(&scene1Overlay);
 
     VkDescriptorImageInfo scene2Texture;
     memset(&scene2Texture, 0, sizeof(scene2Texture));
@@ -6648,8 +5935,9 @@ VkResult buildCommandBuffers(void)
 {
     //variables
     VkResult vkResult = VK_SUCCESS;
+    float fade = Scene1_GetPendingBlendFade();
     float blendConstants[4];
-    blendConstants[0] = blendConstants[1] = blendConstants[2] = blendConstants[3] = sPendingBlendFade;
+    blendConstants[0] = blendConstants[1] = blendConstants[2] = blendConstants[3] = fade;
 
     //code
     //step1
@@ -6773,7 +6061,7 @@ VkResult buildCommandBuffers(void)
         }
     }
 
-    sRecordedBlendFade = sPendingBlendFade;
+    Scene1_CommitPendingBlendFade();
     return vkResult;
 }
 
