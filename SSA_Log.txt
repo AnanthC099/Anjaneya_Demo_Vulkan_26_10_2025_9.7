@@ -406,7 +406,7 @@ createTexture() --> vkFreeMemory() is done for vkBuffer_stagingBuffer of setp 7
 createTexture() --> vkCreateImageView() is succedded
 createTexture() --> vkCreateSampler() is succedded
 Initialize() --> createTexture() is succedded for Stone texture
-Initialize() --> CreateScene1Textures() succeeded
+Initialize() --> Scene1_CreateTextures() succeeded
 Initialize() --> Scene 2 texture created
 createUniformBuffer() --> created scene0 uniform buffer
 createUniformBuffer() --> created scene1 uniform buffer
